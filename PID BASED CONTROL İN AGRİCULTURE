@@ -1,0 +1,143 @@
+import numpy as np
+import matplotlib.pyplot as plt
+from numpy.linalg import eigvals, matrix_rank
+
+def main():
+    # === System Parameters ===
+    print("=== System Parameters ===")
+    a = float(input("Drying rate a (e.g., 0.1): "))
+    b = float(input("Irrigation effect b (e.g., 0.5): "))
+    theta_ambient = float(input("Ambient moisture (%): "))
+    theta_set = float(input("Target soil moisture (%): "))
+    theta0 = [float(input("Initial moisture (%): "))]
+
+    # === PID Controller Gains ===
+    print("\n=== PID Controller Gains ===")
+    Kp = float(input("Kp (e.g., 0.8): "))
+    Ki = float(input("Ki (e.g., 0.05): "))
+    Kd = float(input("Kd (e.g., 0.2): "))
+
+    # === Observer Gains ===
+    print("\n=== Observer Gains ===")
+    l1 = float(input("Observer gain l1 (e.g., 6.4): "))
+    l2 = float(input("Observer gain l2 (e.g., 78.0): "))
+
+    # === Simulation Time ===
+    t_span = (0, 100)
+    t_eval = np.linspace(t_span[0], t_span[1], 500)
+    dt = t_eval[1] - t_eval[0]
+
+    # === State Initialization ===
+    x_real = np.zeros((2, len(t_eval)))  # [theta, integral]
+    x_hat = np.zeros((2, len(t_eval)))   # estimated state
+    u_list = np.zeros(len(t_eval))       # control input
+
+    x_real[:, 0] = [theta0[0], 0]
+    x_hat[:, 0] = [theta0[0], 0]
+
+    error_integral = 0
+    previous_error = 0
+
+    # === Simulation Loop ===
+    for i in range(1, len(t_eval)):
+        theta = x_real[0, i-1]
+        error = theta_set - theta
+        error_integral += error * dt
+        error_derivative = (error - previous_error) / dt
+        previous_error = error
+
+        # PID Controller
+        u = Kp * error + Ki * error_integral + Kd * error_derivative
+        u = max(0.0, min(1.0, u))
+        u_list[i] = u
+
+        # Real System
+        dtheta = -a * (theta - theta_ambient) + b * u
+        x_real[0, i] = x_real[0, i-1] + dtheta * dt
+        x_real[1, i] = x_real[1, i-1] + error * dt
+
+        # Observer
+        theta_hat = x_hat[0, i-1]
+        integral_hat = x_hat[1, i-1]
+        y = theta
+        y_hat = theta_hat
+        dtheta_hat = -(a + b*Kp)*theta_hat + b*Ki*integral_hat + l1*(y - y_hat)
+        dintegral_hat = theta_set - theta_hat + l2*(y - y_hat)
+        x_hat[0, i] = x_hat[0, i-1] + dtheta_hat * dt
+        x_hat[1, i] = x_hat[1, i-1] + dintegral_hat * dt
+
+    # === System Matrices for Analysis ===
+    A = np.array([[-(a + b * Kp), b * Ki], [-1, 0]])
+    B = np.array([[1], [0]])
+    C = np.array([[1, 0]])
+    L = np.array([[l1], [l2]])
+    A_obs = A - L @ C
+
+    observability_matrix = np.vstack([C, C @ A])
+    controllability_matrix = np.hstack([B, A @ B])
+    eig_A = eigvals(A)
+    eig_A_obs = eigvals(A_obs)
+
+    is_stable = np.all(np.real(eig_A) < 0)
+    is_observer_stable = np.all(np.real(eig_A_obs) < 0)
+    is_observable = matrix_rank(observability_matrix) == A.shape[0]
+    is_controllable = matrix_rank(controllability_matrix) == A.shape[0]
+
+    # === Report ===
+    print("\n=== SYSTEM ANALYSIS REPORT ===")
+    print("▶ A Eigenvalues:", eig_A, "→", "✅ Stable" if is_stable else "❌ Unstable")
+    print("▶ Observability:", "✅ Yes" if is_observable else "❌ No")
+    print("▶ Controllability:", "✅ Yes" if is_controllable else "❌ No")
+    print("▶ A-LC Eigenvalues (Observer):", eig_A_obs, "→", "✅ Stable" if is_observer_stable else "❌ Unstable")
+
+    # === GRAPH 1: Moisture Convergence ===
+    plt.figure()
+    plt.plot(t_eval, x_real[0], label='Soil Moisture')
+    plt.axhline(theta_set, color='green', linestyle='--', label='Target')
+    plt.axhline(theta_ambient, color='gray', linestyle='--', label='Ambient')
+    plt.title('1. Moisture Convergence to Target')
+    plt.xlabel('Time')
+    plt.ylabel('Moisture (%)')
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # === GRAPH 2: Control Input u(t) ===
+    plt.figure()
+    plt.plot(t_eval, u_list, label='u(t)', color='red')
+    plt.title('2. Control Input Over Time')
+    plt.xlabel('Time')
+    plt.ylabel('u(t)')
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # === GRAPH 3: Convex Cost-Like Behavior ===
+    cost_like = (theta_set - x_real[0])**2 + 0.1 * u_list**2
+    plt.figure()
+    plt.plot(t_eval, cost_like, label='Quadratic-like Cost')
+    plt.title('3. PID Approximating Convex Optimization')
+    plt.xlabel('Time')
+    plt.ylabel('Cost Proxy')
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+    # === GRAPH 4: MPC-like Reference Comparison ===
+    theta_mpc_like = theta_set + 5 * np.exp(-0.05 * t_eval)
+    plt.figure()
+    plt.plot(t_eval, x_real[0], label='PID Moisture')
+    plt.plot(t_eval, theta_mpc_like, '--', label='MPC-like Reference')
+    plt.title('4. PID vs MPC-like Reference Tracking')
+    plt.xlabel('Time')
+    plt.ylabel('Moisture (%)')
+    plt.grid()
+    plt.legend()
+    plt.tight_layout()
+    plt.show()
+
+if __name__ == '__main__':
+    main()
